@@ -89,6 +89,8 @@ static gint ett_nano_bulk_pull_account_response = -1;
 #define NANO_PACKET_TYPE_BULK_PULL_ACCOUNT 11
 #define NANO_PACKET_TYPE_TELEMETRY_REQ 12
 #define NANO_PACKET_TYPE_TELEMETRY_ACK 13
+#define NANO_PACKET_TYPE_ASC_PULL_REQ 14
+#define NANO_PACKET_TYPE_ASC_PULL_ACK 15
 
 static const value_string nano_packet_type_strings[] = {
     { NANO_PACKET_TYPE_INVALID, "Invalid" },
@@ -105,6 +107,8 @@ static const value_string nano_packet_type_strings[] = {
     { NANO_PACKET_TYPE_BULK_PULL_ACCOUNT, "Bulk Pull Account" },
     { NANO_PACKET_TYPE_TELEMETRY_REQ, "Telemetry Req" },
     { NANO_PACKET_TYPE_TELEMETRY_ACK, "Telemetry Ack" },
+    { NANO_PACKET_TYPE_ASC_PULL_REQ, "Asc Pull Req" },
+    { NANO_PACKET_TYPE_ASC_PULL_ACK, "Asc Pull Ack" },
     { 0, NULL },
 };
 
@@ -680,6 +684,105 @@ static int dissect_nano_telemetry_ack(tvbuff_t *tvb, packet_info *pinfo, proto_t
 
     return offset;
 }
+
+
+//
+// Dissect Asc Pull Ack / Req
+//
+static int hf_nano_asc_pull_type = -1;
+static int hf_nano_asc_pull_req_ack_id = -1;
+static int hf_nano_asc_pull_req_blocks_payload = -1;
+static int hf_nano_asc_pull_req_account_info_payload = -1;
+static int hf_nano_asc_pull_ack_blocks_payload = -1;
+static int hf_nano_asc_pull_ack_account_info_payload = -1;
+
+static gint ett_nano_asc_pull_req = -1;
+static gint ett_nano_asc_pull_ack = -1;
+
+static int
+dissect_nano_asc_pull_req(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset)
+{
+    // Dissect the asc_pull_type
+    proto_tree_add_item(tree, hf_nano_asc_pull_type, tvb, offset, 1, ENC_BIG_ENDIAN);
+    offset += 1;
+
+    // Dissect the req/ack ID
+    proto_tree_add_item(tree, hf_nano_asc_pull_req_ack_id, tvb, offset, 8, ENC_BIG_ENDIAN);
+    offset += 8;
+
+    // Dissect the payload based on the asc_pull_type
+    guint8 asc_pull_type = tvb_get_guint8(tvb, offset - 9);
+
+    switch (asc_pull_type) {
+        case 1: // blocks
+            proto_tree_add_item(tree, hf_nano_asc_pull_req_blocks_payload, tvb, offset, 33, ENC_NA);
+            break;
+        case 2: // account_info
+            proto_tree_add_item(tree, hf_nano_asc_pull_req_account_info_payload, tvb, offset, 32, ENC_NA);
+            break;
+    }
+    return offset;
+}
+
+static void
+dissect_nano_asc_pull_ack_blocks_payload(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset)
+{
+    while (tvb_get_guint8(tvb, offset) != 1) {
+        guint8 block_type = tvb_get_guint8(tvb, offset);
+
+        switch (block_type) {
+            case NANO_BLOCK_TYPE_SEND:
+                dissect_nano_send_block(tvb, tree, offset);
+                offset += NANO_BLOCK_SIZE_SEND;
+                break;
+            case NANO_BLOCK_TYPE_RECEIVE:
+                dissect_nano_receive_block(tvb, tree, offset);
+                offset += NANO_BLOCK_SIZE_RECEIVE;
+                break;
+            case NANO_BLOCK_TYPE_OPEN:
+                dissect_nano_open_block(tvb, tree, offset);
+                offset += NANO_BLOCK_SIZE_OPEN;
+                break;
+            case NANO_BLOCK_TYPE_CHANGE:
+                dissect_nano_change_block(tvb, tree, offset);
+                offset += NANO_BLOCK_SIZE_CHANGE;
+                break;
+            case NANO_BLOCK_TYPE_STATE:
+                dissect_nano_state(tvb, tree, offset);
+                offset += NANO_BLOCK_SIZE_STATE;
+                break;
+            default:
+                // Unknown block type; return from the function
+                return;
+        }
+    }
+}
+
+static int
+dissect_nano_asc_pull_ack(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, gint offset)
+{
+    // Dissect the asc_pull_type
+    proto_tree_add_item(tree, hf_nano_asc_pull_type, tvb, offset, 1, ENC_BIG_ENDIAN);
+    offset += 1;
+
+    // Dissect the req/ack ID
+    proto_tree_add_item(tree, hf_nano_asc_pull_req_ack_id, tvb, offset, 8, ENC_BIG_ENDIAN);
+    offset += 8;
+
+    // Dissect the payload based on the asc_pull_type
+    guint8 asc_pull_type = tvb_get_guint8(tvb, offset - 9);
+
+    switch (asc_pull_type) {
+        case 1: // blocks
+            dissect_nano_asc_pull_ack_blocks_payload(tvb, pinfo, tree, offset);
+            break;
+        case 2: // account_info
+            proto_tree_add_item(tree, hf_nano_asc_pull_ack_account_info_payload, tvb, offset, 144, ENC_NA);
+            break;
+    }
+    return offset;
+}
+
 
 //
 // Dissect Node ID Handshake
@@ -1734,7 +1837,19 @@ void proto_register_nano(void)
             { "Hash", "nano.confirm_ack.vote_by_hash.hash",
             FT_BYTES, BASE_NONE, NULL, 0x00,
             NULL, HFILL }
-        }
+        },
+        /* Asc pull ack & req*/
+        { 
+            &hf_nano_asc_pull_type, 
+            { "Ascending Pull Type", "nano.asc_pull_type", 
+            FT_UINT8, BASE_DEC, NULL,
+            0x0, NULL, HFILL }
+        },
+        { &hf_nano_asc_pull_req_ack_id, { "Request/Acknowledgement ID", "nano.asc_pull_req_ack_id", FT_UINT64, BASE_DEC, NULL, 0x0, NULL, HFILL } },
+        { &hf_nano_asc_pull_req_blocks_payload, { "Blocks Payload", "nano.asc_pull_req_blocks_payload", FT_BYTES, BASE_NONE, NULL, 0x0, NULL, HFILL } },
+        { &hf_nano_asc_pull_req_account_info_payload, { "Account Info Payload", "nano.asc_pull_req_account_info_payload", FT_BYTES, BASE_NONE, NULL, 0x0, NULL, HFILL } },
+        { &hf_nano_asc_pull_ack_blocks_payload, { "Blocks Payload", "nano.asc_pull_ack_blocks_payload", FT_BYTES, BASE_NONE, NULL, 0x0, NULL, HFILL } },
+        { &hf_nano_asc_pull_ack_account_info_payload, { "Account Info Payload", "nano.asc_pull_ack_account_info_payload", FT_BYTES, BASE_NONE, NULL, 0x0, NULL, HFILL } }
     };
 
     static gint *ett[] = {
@@ -1767,7 +1882,10 @@ void proto_register_nano(void)
         &ett_nano_confirm_ack,
         &ett_nano_confirm_ack_hashes,
 
-        &ett_nano_bulk_pull_account_response
+        &ett_nano_bulk_pull_account_response,
+
+        &ett_nano_asc_pull_req,
+        &ett_nano_asc_pull_ack
     };
 
     proto_nano = proto_register_protocol("Nano Cryptocurrency Protocol", "Nano", "nano");
